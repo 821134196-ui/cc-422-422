@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>场次日历 · 麦克风电池周转</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="dot"></span>演艺场馆 · 麦克风电池周转</div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="authbox">
+    <span id="roleBadge" class="role-badge none">未登录</span>
+    <select id="staffSelect"></select>
+  </div>
+</header>
+<main>
+  <div class="page-head">
+    <div>
+      <h1>场次日历</h1>
+      <div class="sub">演出名称与人员资料为演示数据 · 点击场次可进入对应设备套装</div>
+    </div>
+    <div class="row">
+      <button class="ghost" id="prevMonth">◀ 上月</button>
+      <button class="ghost" id="todayBtn">回到本月</button>
+      <button class="ghost" id="nextMonth">下月 ▶</button>
+      <button class="cyan" id="newShowBtn" data-perm="show:create">＋ 新建场次</button>
+    </div>
+  </div>
+
+  <div class="stat-row" id="stats"></div>
+
+  <div class="card">
+    <h2 id="calTitle"></h2>
+    <div class="cal-grid" id="calDows"></div>
+    <div class="cal-grid" id="calGrid" style="margin-top:7px"></div>
+  </div>
+</main>
+
+<dialog id="showDialog" style="border:none;border-radius:14px;padding:22px;max-width:420px;width:90%">
+  <h2 style="margin-top:0">新建演出场次</h2>
+  <div class="grid" style="gap:10px">
+    <label class="field">演出名称<input id="fName" placeholder="例：话剧《第四面墙》"></label>
+    <label class="field">场馆<input id="fVenue" placeholder="大剧场"></label>
+    <div class="row">
+      <label class="field" style="flex:1">开场时间<input type="datetime-local" id="fStart"></label>
+      <label class="field" style="flex:1">结束时间<input type="datetime-local" id="fEnd"></label>
+    </div>
+  </div>
+  <div class="row" style="justify-content:flex-end;margin-top:16px">
+    <button class="ghost" onclick="showDialog.close()">取消</button>
+    <button class="cyan" id="saveShow">创建</button>
+  </div>
+</dialog>
+
+<script src="/app.js"></script>
+<script>
+let cursor = new Date();
+let SHOWS = [];
+
+async function pageInit() {
+  SHOWS = await api('/api/shows');
+  renderStats();
+  renderCalendar();
+  document.getElementById('prevMonth').onclick = () => { cursor.setMonth(cursor.getMonth() - 1); renderCalendar(); };
+  document.getElementById('nextMonth').onclick = () => { cursor.setMonth(cursor.getMonth() + 1); renderCalendar(); };
+  document.getElementById('todayBtn').onclick = () => { cursor = new Date(); renderCalendar(); };
+  document.getElementById('newShowBtn').onclick = openNew;
+  document.getElementById('saveShow').onclick = saveNew;
+}
+
+function renderStats() {
+  const upcoming = SHOWS.filter((s) => s.status === 'scheduled').length;
+  const live = SHOWS.filter((s) => s.status === 'in_progress').length;
+  const settled = SHOWS.filter((s) => s.status === 'settled').length;
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><div class="n cyan">${upcoming}</div><div class="l">待上演</div></div>
+    <div class="stat"><div class="n" style="color:var(--cyan-deep)">${live}</div><div class="l">进行中（归还窗口）</div></div>
+    <div class="stat"><div class="n" style="color:var(--green)">${settled}</div><div class="l">已完成清点</div></div>
+    <div class="stat"><div class="n">${SHOWS.length}</div><div class="l">全部场次</div></div>`;
+}
+
+function renderCalendar() {
+  const y = cursor.getFullYear(), m = cursor.getMonth();
+  document.getElementById('calTitle').textContent = `${y} 年 ${m + 1} 月`;
+  document.getElementById('calDows').innerHTML = ['一', '二', '三', '四', '五', '六', '日']
+    .map((d) => `<div class="cal-dow">周${d}</div>`).join('');
+
+  const first = new Date(y, m, 1);
+  const startOffset = (first.getDay() + 6) % 7;
+  const days = new Date(y, m + 1, 0).getDate();
+  const today = new Date();
+  let html = '';
+  for (let i = 0; i < startOffset; i++) {
+    const d = new Date(y, m, i - startOffset + 1);
+    html += dayCell(d, true);
+  }
+  for (let d = 1; d <= days; d++) html += dayCell(new Date(y, m, d), false);
+  const total = startOffset + days;
+  for (let i = total; i < Math.ceil(total / 7) * 7; i++) {
+    html += dayCell(new Date(y, m + 1, i - total + 1), true);
+  }
+  const grid = document.getElementById('calGrid');
+  grid.innerHTML = html;
+  grid.querySelectorAll('.cal-chip').forEach((c) => {
+    c.onclick = () => location.href = `/kits.html?show=${c.dataset.show}`;
+  });
+}
+
+function dayCell(date, out) {
+  const dayShows = SHOWS.filter((s) => sameDay(new Date(s.start_at), date));
+  const isToday = sameDay(date, new Date());
+  return `<div class="cal-day ${out ? 'out' : ''} ${isToday ? 'today' : ''}">
+    <span class="dnum">${date.getDate()}</span>
+    ${dayShows.map((s) => `<span class="cal-chip ${s.status}" title="${esc(s.venue)} · ${esc(s.name)}" data-show="${s.id}">${esc(s.name)}</span>`).join('')}
+  </div>`;
+}
+function sameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
+
+function openNew() {
+  const now = new Date();
+  now.setMinutes(0, 0, 0); now.setHours(19, 30);
+  const end = new Date(now.getTime() + 3 * 3600 * 1000);
+  document.getElementById('fStart').value = toLocalInput(now);
+  document.getElementById('fEnd').value = toLocalInput(end);
+  showDialog.showModal();
+}
+function toLocalInput(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+async function saveNew() {
+  const name = document.getElementById('fName').value.trim();
+  const venue = document.getElementById('fVenue').value.trim() || '大剧场';
+  const st = document.getElementById('fStart').value;
+  const en = document.getElementById('fEnd').value;
+  if (!name || !st) return toast('请填写演出名称和开场时间', 'err');
+  await api('/api/shows', { method: 'POST', body: { name, venue, start_at: new Date(st).toISOString(), end_at: new Date(en).toISOString() } });
+  showDialog.close();
+  toast('场次已创建', 'ok');
+  SHOWS = await api('/api/shows');
+  renderStats(); renderCalendar();
+}
+</script>
+</body>
+</html>

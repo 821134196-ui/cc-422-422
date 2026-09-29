@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>充电柜 · 麦克风电池周转</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="dot"></span>演艺场馆 · 麦克风电池周转</div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="authbox"><span id="roleBadge" class="role-badge none"></span><select id="staffSelect"></select></div>
+</header>
+<main>
+  <div class="page-head">
+    <div>
+      <h1>充电柜</h1>
+      <div class="sub">槽位网格实时显示电量与回执状态 · 进程任务每 5 秒推进一档充电并巡检低电量/健康度</div>
+    </div>
+    <div class="row">
+      <button class="ghost" id="tickBtn">▶ 立即推进一拍</button>
+      <button class="ghost" onclick="load()">刷新</button>
+    </div>
+  </div>
+
+  <div class="grid" id="cabinets" style="grid-template-columns:repeat(auto-fit,minmax(430px,1fr))"></div>
+
+  <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:18px">
+    <div class="card">
+      <h2>电池入槽</h2>
+      <div class="row">
+        <label class="field">电池
+          <select id="dockBat"></select></label>
+        <label class="field">充电柜
+          <select id="dockCab"></select></label>
+        <label class="field">槽位
+          <select id="dockPos"></select></label>
+        <button class="cyan" id="dockBtn" data-perm="charger:operate">入槽充电</button>
+      </div>
+      <div class="muted-text" style="font-size:12px;margin-top:8px">
+        隔离中、已在其他套装或正在充电的电池会被拒绝；一个槽位同时只能有一块电池。
+      </div>
+    </div>
+    <div class="card">
+      <h2>设备回执流（最近 30 条）</h2>
+      <div id="receipts" class="scan-log mono"></div>
+    </div>
+  </div>
+</main>
+<script src="/app.js"></script>
+<script>
+async function pageInit() {
+  document.getElementById('tickBtn').onclick = async () => {
+    const r = await api('/api/tasks/tick', { method: 'POST' });
+    toast(`第 ${r.tick} 拍：应用 ${r.charge.applied.length}，乱序丢弃 ${r.charge.dropped.length}，隔离 ${r.quarantined}`, 'ok');
+    load();
+  };
+  document.getElementById('dockBtn').onclick = dock;
+  await load();
+}
+
+async function load() {
+  const [cabs, bats] = await Promise.all([api('/api/chargers'), api('/api/batteries')]);
+  renderCabinets(cabs);
+  const dockBat = document.getElementById('dockBat');
+  dockBat.innerHTML = '<option value="">选择电池…</option>' +
+    bats.filter((b) => b.state === 'available').map((b) =>
+      `<option value="${b.code}">${b.code} · ${b.model} · ${b.charge_pct}% · SOH ${b.health_pct}%</option>`).join('');
+  const cab = document.getElementById('dockCab');
+  cab.innerHTML = cabs.map((c) => `<option value="${c.code}">${c.code} ${c.name}</option>`).join('');
+  cab.onchange = () => fillPos(cabs);
+  fillPos(cabs);
+  const receipts = await api('/api/receipts');
+  document.getElementById('receipts').innerHTML = receipts.length
+    ? receipts.map((r) => `<div>[${fmt(r.received_at)}] ${r.slot} ${r.battery_code} seq=${r.seq} ${r.event} ${r.charge_pct ?? ''}% → ${r.applied === 1 ? '<span class="ok">已应用</span>' : r.applied === 2 ? '<span class="late">乱序丢弃</span>' : '待处理'}</div>`).join('')
+    : '<div class="empty-hint">暂无回执</div>';
+}
+function fillPos(cabs) {
+  const c = cabs.find((x) => x.code === document.getElementById('dockCab').value) || cabs[0];
+  document.getElementById('dockPos').innerHTML = c.slots.map((s) =>
+    `<option value="${s.position}" ${s.session_id && !s.ended_at ? 'disabled' : ''}>${s.position}${s.session_id && !s.ended_at ? '（占用）' : s.session_status ? `（${stateLabel(s.session_status)}）` : ''}</option>`).join('');
+}
+
+function renderCabinets(cabs) {
+  const box = document.getElementById('cabinets');
+  box.innerHTML = '';
+  for (const c of cabs) {
+    const div = document.createElement('div');
+    div.className = 'cabinet';
+    const charging = c.slots.filter((s) => s.session_status === 'charging' && !s.ended_at).length;
+    div.innerHTML = `
+      <div class="cab-title"><span>${c.code} · ${esc(c.name)}</span>
+        <span style="font-size:12px;font-weight:400;color:#b7aed2">充电中 ${charging} / ${c.slots.length} 槽</span></div>
+      <div class="slot-grid">
+        ${c.slots.map((s) => slotHtml(s)).join('')}
+      </div>`;
+    div.querySelectorAll('[data-eject]').forEach((b) => b.onclick = async () => {
+      try {
+        await api('/api/eject', { method: 'POST', body: { charger_code: c.code, position: Number(b.dataset.eject) } });
+        toast('已弹出，电池回到在库', 'ok'); load();
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    box.appendChild(div);
+  }
+}
+
+function slotHtml(s) {
+  if (!s.session_id) {
+    return `<div class="slot empty"><span class="pos">槽 ${s.position}</span><span style="font-size:12px">空闲</span></div>`;
+  }
+  const active = !s.ended_at;
+  const cls = active ? s.session_status : `${s.session_status} stale`;
+  const statusText = { charging: '充电中', done: '已充满', failed: '充电失败', contact_bad: '接触不良', ejected: '已弹出' }[s.session_status] || s.session_status;
+  const color = s.charge_pct < 20 ? 'var(--red)' : s.charge_pct < 60 ? 'var(--amber)' : 'var(--green)';
+  return `<div class="slot ${cls}" ${active ? '' : 'style="opacity:.88"'}>
+    <span class="pos">槽 ${s.position} · ${statusText}${active ? '' : '（结果留档）'}</span>
+    <span class="bcode">${esc(s.battery_code)}</span>
+    <span class="pct" style="color:${color}">${s.charge_pct}%</span>
+    ${pctBar(s.charge_pct)}
+    <span class="meta">SOH ${s.health_pct}%
+      ${active ? '<button class="ghost tiny" style="margin-left:auto" data-perm="charger:operate" data-eject="' + s.position + '">弹出</button>' : '<span class="pill-kind" style="margin-left:auto">可重新入槽</span>'}
+    </span>
+  </div>`;
+}
+
+async function dock() {
+  try {
+    await api('/api/dock', {
+      method: 'POST',
+      body: {
+        battery_code: document.getElementById('dockBat').value,
+        charger_code: document.getElementById('dockCab').value,
+        position: Number(document.getElementById('dockPos').value),
+      },
+    });
+    toast('已入槽，等待设备回执…', 'ok');
+    load();
+  } catch (e) { toast(e.message, 'err'); }
+}
+</script>
+</body>
+</html>

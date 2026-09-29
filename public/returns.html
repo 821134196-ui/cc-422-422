@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>归还检测 · 麦克风电池周转</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="dot"></span>演艺场馆 · 麦克风电池周转</div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="authbox"><span id="roleBadge" class="role-badge none"></span><select id="staffSelect"></select></div>
+</header>
+<main>
+  <div class="page-head">
+    <div>
+      <h1>归还检测</h1>
+      <div class="sub">麦克风 · 电池 · 腰包拆成三列，绿色已还、红色缺件；扫描不属于本套装的设备会被拦下（防错拿/错频机）</div>
+    </div>
+    <div class="row">
+      <label class="field">选择领用单
+        <select id="clSelect" style="min-width:280px"></select></label>
+    </div>
+  </div>
+
+  <div id="settledBanner"></div>
+
+  <div class="card" id="scanCard" style="margin-bottom:16px">
+    <div class="row">
+      <label class="field" style="flex:1">扫码 / 输入设备资产编号
+        <input id="scanInput" placeholder="例：MIC-HH-03 或 BAT-10，回车归还"></label>
+      <button class="cyan" id="scanBtn" data-perm="return:scan">确认归还</button>
+      <span id="quickBtns" style="display:flex;gap:6px;flex-wrap:wrap"></span>
+    </div>
+    <div id="scanLog" class="scan-log" style="margin-top:8px"></div>
+  </div>
+
+  <div class="three-col" id="cols"></div>
+
+  <div class="card" style="margin-top:18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <div style="flex:1;min-width:260px">
+      <strong>完成清点</strong>
+      <div class="muted-text" style="font-size:12.5px">
+        清点后漏件自动进入故障队列追讨；<strong>此后迟到的回传只记录、不覆盖已完成清点</strong>。
+      </div>
+    </div>
+    <input id="settleNote" placeholder="清点备注（可空）" style="min-width:240px">
+    <button class="cyan" id="settleBtn" data-perm="checklist:settle">完成清点</button>
+  </div>
+</main>
+<script src="/app.js"></script>
+<script>
+let CLS = [], CL = null, LOGS = [];
+
+async function pageInit() {
+  CLS = await api('/api/checklists');
+  const sel = document.getElementById('clSelect');
+  sel.innerHTML = CLS.map((c) => `<option value="${c.id}">#${c.id} ${c.show_name}（${stateLabel(c.state)}）</option>`).join('');
+  const want = new URLSearchParams(location.search).get('cl');
+  if (want) sel.value = want;
+  sel.onchange = () => loadCl(Number(sel.value));
+  document.getElementById('scanBtn').onclick = doScan;
+  document.getElementById('scanInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doScan(); });
+  document.getElementById('settleBtn').onclick = doSettle;
+  await loadCl(Number(sel.value));
+}
+
+async function loadCl(id) {
+  if (!id) return;
+  CL = await api(`/api/checklists/${id}`);
+  LOGS = await api(`/api/checklists/${id}/scans`);
+  render();
+}
+
+function render() {
+  document.getElementById('settledBanner').innerHTML = CL.state === 'settled'
+    ? `<div class="card" style="border-color:var(--green);background:var(--green-soft);margin-bottom:16px">
+         ✅ 该场已于 ${fmt(CL.settled_at)} 完成清点。${esc(CL.settle_note || '')}
+         <br><span class="muted-text">迟到回传将被标记拒收，不改变本页结果。</span></div>`
+    : '';
+
+  const mics = CL.items.filter((i) => i.microphone_id);
+  const bats = CL.items.filter((i) => i.spare_battery_id);
+  const bps = CL.items.filter((i) => i.beltpack_id);
+
+  document.getElementById('cols').innerHTML = `
+    ${colHtml('mic', '🎤 麦克风', mics, (i) =>
+      itemCard(i.returned_mic, i.mic_code, `${i.mic_model} · <span class="mono">${i.mic_freq}MHz</span>`, i.role_name))}
+    ${colHtml('bat', '🔋 备用电池', bats, (i) =>
+      itemCard(i.returned_battery, i.bat_code, `${i.bat_model} · ${pctBar(i.charge_pct)} · SOH ${i.health_pct}%`, i.role_name))}
+    ${colHtml('bp', '🎙 腰包', bps, (i) =>
+      itemCard(i.returned_bp, i.bp_code, `${i.bp_model} · ${esc(i.bp_state === 'in_stock' ? '已回库' : '未回库')}`, i.role_name))}
+  `;
+
+  const missing = mics.filter((i) => !i.returned_mic).length + bats.filter((i) => !i.returned_battery).length + bps.filter((i) => !i.returned_bp).length;
+  const btn = document.getElementById('settleBtn');
+  btn.disabled = CL.state !== 'issued' || !can('checklist:settle');
+  btn.textContent = CL.state === 'issued'
+    ? (missing ? `完成清点（${missing} 件漏件转故障队列）` : '完成清点（全部归齐）')
+    : CL.state === 'settled' ? '清点已完成' : '套装未发出';
+
+  // 快捷扫描按钮（未归还设备）
+  const quick = document.getElementById('quickBtns');
+  const unreturned = [
+    ...mics.filter((i) => !i.returned_mic).map((i) => i.mic_code),
+    ...bats.filter((i) => !i.returned_battery).map((i) => i.bat_code),
+    ...bps.filter((i) => !i.returned_bp).map((i) => i.bp_code),
+  ];
+  quick.innerHTML = unreturned.map((c) => `<button class="ghost tiny" data-code="${c}">扫 ${c}</button>`).join('')
+    + (CL.state === 'settled' && unreturned.length ? '<span class="muted-text" style="font-size:12px">↑ 可试扫迟到回传（将拒收）</span>' : '');
+  quick.querySelectorAll('[data-code]').forEach((b) => b.onclick = () => { document.getElementById('scanInput').value = b.dataset.code; doScan(); });
+
+  document.getElementById('scanLog').innerHTML = LOGS.slice().reverse().map((l) =>
+    `<div class="${l.accepted ? 'ok' : 'late'}">[${fmt(l.scanned_at)}] ${l.accepted ? '✓ 计入' : '✗ 迟到拒收'} ${esc(l.device_code)}（${{ microphone: '麦克风', battery: '电池', beltpack: '腰包' }[l.device_type]}）</div>`).join('');
+  applyPermissions();
+}
+
+function colHtml(cls, title, items, fn) {
+  const missing = items.filter((i) =>
+    cls === 'mic' ? !i.returned_mic : cls === 'bat' ? !i.returned_battery : !i.returned_bp).length;
+  return `<section class="return-col ${cls}">
+    <header><span>${title}</span>
+      <span>${items.length - missing}/${items.length} 还${missing ? ` · <b style="color:var(--red)">${missing} 缺</b>` : ''}</span>
+    </header>
+    <div class="rc-body">${items.length ? items.map(fn).join('') : '<div class="empty-hint">本套装无此设备</div>'}</div>
+  </section>`;
+}
+function itemCard(returned, code, detailHtml, role) {
+  return `<div class="rc-item ${returned ? 'returned' : 'missing'}">
+    <div><div class="code mono">${esc(code)}</div><div class="who">${esc(role)} · ${detailHtml}</div></div>
+    ${returned ? '<span class="badge ok">已还</span>' : '<span class="badge danger">缺件</span>'}
+  </div>`;
+}
+
+async function doScan() {
+  const code = document.getElementById('scanInput').value.trim();
+  if (!code) return;
+  try {
+    const r = await api(`/api/checklists/${CL.id}/scan`, { method: 'POST', body: { code } });
+    if (r.late) toast(r.message, 'err');
+    else if (r.duplicate) toast(`${code} 已登记过归还`, '');
+    else toast(`${code} 归还成功（${{ microphone: '麦克风', battery: '电池', beltpack: '腰包' }[r.found.type]}）`, 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+  document.getElementById('scanInput').value = '';
+  await loadCl(CL.id);
+}
+
+async function doSettle() {
+  const note = document.getElementById('settleNote').value.trim();
+  if (!confirm('确认完成清点？漏件将进入故障队列，之后迟到的归还不再覆盖清单。')) return;
+  try {
+    const r = await api(`/api/checklists/${CL.id}/settle`, { method: 'POST', body: { note } });
+    toast(r.missing_count ? `清点完成，${r.missing_count} 件漏件已转故障队列` : '清点完成，全部归齐', r.missing_count ? '' : 'ok');
+    await loadCl(CL.id);
+  } catch (e) { toast(e.message, 'err'); }
+}
+</script>
+</body>
+</html>

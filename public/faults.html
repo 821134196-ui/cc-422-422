@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>故障队列 · 麦克风电池周转</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="dot"></span>演艺场馆 · 麦克风电池周转</div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="authbox"><span id="roleBadge" class="role-badge none"></span><select id="staffSelect"></select></div>
+</header>
+<main>
+  <div class="page-head">
+    <div>
+      <h1>故障队列</h1>
+      <div class="sub">低电量 · 充电失败 · 接触不良 · 丢失 · 错频 · 归还漏件 · 健康度隔离，分类处置</div>
+    </div>
+    <div class="row">
+      <select id="fStatus">
+        <option value="open">待处理</option>
+        <option value="acknowledged">处理中</option>
+        <option value="resolved">已解决</option>
+        <option value="all">全部</option>
+      </select>
+      <button class="ghost" onclick="load()">刷新</button>
+    </div>
+  </div>
+
+  <div class="stat-row" id="stats"></div>
+  <div class="grid" id="list" style="gap:10px"></div>
+</main>
+<script src="/app.js"></script>
+<script>
+async function pageInit() {
+  document.getElementById('fStatus').onchange = load;
+  await load();
+}
+
+async function load() {
+  const status = document.getElementById('fStatus').value;
+  const [faults, allOpen] = await Promise.all([
+    api(`/api/faults?status=${status}`),
+    api('/api/faults?status=open'),
+  ]);
+  const counts = {};
+  allOpen.forEach((f) => { counts[f.kind] = (counts[f.kind] || 0) + 1; });
+  const order = ['low_battery', 'health_quarantine', 'charge_failed', 'contact_bad', 'wrong_freq', 'missing_return', 'lost'];
+  document.getElementById('stats').innerHTML = order.map((k) =>
+    `<div class="stat"><div class="n ${['charge_failed', 'contact_bad', 'missing_return', 'lost', 'health_quarantine'].includes(k) ? 'red' : k === 'low_battery' ? 'amber' : 'cyan'}">${counts[k] || 0}</div><div class="l">${FAULT_LABEL[k]}</div></div>`
+  ).join('');
+
+  const box = document.getElementById('list');
+  if (!faults.length) { box.innerHTML = '<div class="card empty-hint">🎉 当前筛选下没有故障</div>'; return; }
+  box.innerHTML = '';
+  for (const f of faults) box.appendChild(card(f));
+  applyPermissions();
+}
+
+function card(f) {
+  const div = document.createElement('div');
+  div.className = 'fault-card';
+  const canResolve = can('fault:resolve');
+  let actions = '';
+  if (f.status !== 'resolved') {
+    if (f.status === 'open') actions += `<button class="ghost tiny" data-act="ack" data-id="${f.id}" data-perm="fault:resolve">接单</button>`;
+    if (f.kind === 'wrong_freq') {
+      actions += `<button class="cyan tiny" data-act="freq" data-id="${f.id}" data-mic="${f.ref_id}" data-perm="freq:fix">校正频点</button>`;
+    }
+    if (f.kind === 'missing_return') {
+      actions += `<button class="danger tiny" data-act="lost" data-id="${f.id}" data-perm="fault:resolve">确认丢失</button>`;
+    }
+    if (['low_battery'].includes(f.kind)) {
+      actions += `<a class="btn tiny ghost" href="/chargers.html">去充电 →</a>`;
+    }
+    if (['charge_failed', 'contact_bad'].includes(f.kind)) {
+      actions += `<button class="cyan tiny" data-act="resolve" data-id="${f.id}" data-perm="fault:resolve">换槽重试/已处理</button>`;
+    }
+    if (f.kind === 'health_quarantine') {
+      actions += `<a class="btn tiny ghost" href="/checklists.html">去隔离复核 →</a>`;
+    }
+    actions += `<button class="ghost tiny" data-act="resolve" data-id="${f.id}" data-perm="fault:resolve">解决并关闭</button>`;
+  }
+  div.innerHTML = `
+    <span class="kind-chip ${f.kind}">${FAULT_LABEL[f.kind]}</span>
+    <div class="fb">
+      <div class="ft">${esc(f.ref_code || '设备')} ${f.show_name ? `· <span class="muted-text">${esc(f.show_name)}</span>` : ''}</div>
+      <div class="fd">${esc(f.detail)}</div>
+      <div class="fmeta">
+        #${f.id} · ${fmt(f.created_at)} ·
+        <span class="badge ${f.status === 'resolved' ? 'ok' : f.status === 'acknowledged' ? 'warn' : 'danger'}">${stateLabel(f.status)}</span>
+        ${f.resolution ? ` · 处理：${esc(f.resolution)}` : ''}
+      </div>
+    </div>
+    <div class="actions">${actions}</div>`;
+
+  div.querySelectorAll('[data-act]').forEach((b) => {
+    b.onclick = async () => {
+      const act = b.dataset.act, id = b.dataset.id;
+      try {
+        if (act === 'ack') { await api(`/api/faults/${id}/ack`, { method: 'POST' }); toast('已接单', 'ok'); }
+        else if (act === 'lost') {
+          if (!confirm('确认该设备丢失？设备将标记为丢失并转采购/赔偿流程')) return;
+          await api(`/api/faults/${id}/lost`, { method: 'POST' }); toast('已标记丢失', 'ok');
+        }
+        else if (act === 'freq') {
+          const v = prompt('输入正确频点 MHz（方案频点）：', '720.000');
+          if (!v) return;
+          await api(`/api/microphones/${b.dataset.mic}/freq`, { method: 'POST', body: { freq_mhz: Number(v) } });
+          toast('频点已校正，故障关闭', 'ok');
+        }
+        else {
+          const r = prompt('处理说明（可空）：', act === 'resolve' ? '已处理' : '');
+          if (r === null) return;
+          await api(`/api/faults/${id}/resolve`, { method: 'POST', body: { resolution: r } });
+          toast('故障已关闭', 'ok');
+        }
+        load();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  return div;
+}
+</script>
+</body>
+</html>

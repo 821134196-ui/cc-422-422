@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设备套装 · 麦克风电池周转</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="dot"></span>演艺场馆 · 麦克风电池周转</div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="authbox"><span id="roleBadge" class="role-badge none"></span><select id="staffSelect"></select></div>
+</header>
+<main>
+  <div class="page-head">
+    <div>
+      <h1>设备套装</h1>
+      <div class="sub">按演出分组 · 按角色绑定麦克风、腰包与备用电池；领用后套装锁定，同一设备不能进入两套清单</div>
+    </div>
+    <div class="row">
+      <select id="showFilter"></select>
+    </div>
+  </div>
+  <div class="kits-wrap" id="wrap"></div>
+</main>
+<script src="/app.js"></script>
+<script>
+async function pageInit() {
+  const [shows, cls] = await Promise.all([api('/api/shows'), api('/api/checklists')]);
+  const map = new Map(shows.map((s) => [s.id, s]));
+  const filter = document.getElementById('showFilter');
+  filter.innerHTML = '<option value="">全部演出</option>' +
+    shows.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+  const qs = new URLSearchParams(location.search).get('show');
+  if (qs) filter.value = qs;
+  filter.onchange = () => render(shows, cls);
+  render(shows, cls);
+}
+
+async function render(shows, cls) {
+  const f = Number(document.getElementById('showFilter').value || 0);
+  const wrap = document.getElementById('wrap');
+  const groups = shows.filter((s) => !f || s.id === f);
+  wrap.innerHTML = '';
+  for (const s of groups) {
+    const meta = cls.find((c) => c.show_id === s.id);
+    const cl = meta ? await api(`/api/checklists/${meta.id}`) : null;
+    wrap.appendChild(renderGroup(s, cl));
+  }
+}
+
+function renderGroup(s, cl) {
+  const div = document.createElement('div');
+  div.className = 'card show-group';
+  const time = `${fmt(s.start_at)} → ${fmt(s.end_at)}`;
+  div.innerHTML = `
+    <div class="sg-head">
+      <h2 style="margin:0">${esc(s.name)}</h2>
+      ${badge(s.status)}
+      ${cl ? badge(cl.state) : '<span class="badge muted">无清单</span>'}
+      <span class="muted-text">${esc(s.venue)} · ${time}</span>
+      <span style="flex:1"></span>
+      ${!cl ? '<button class="cyan tiny" data-perm="checklist:write" data-act="create">创建领用单</button>' : ''}
+      ${cl && cl.state === 'draft' ? '<button class="cyan tiny" data-perm="checklist:lock" data-act="lock">领用并锁定套装</button>' : ''}
+      ${cl && cl.state === 'locked' ? '<button class="cyan tiny" data-perm="checklist:issue" data-act="issue">正式发出</button>' : ''}
+      ${cl ? `<a class="btn tiny ghost" href="/checklists.html#cl-${cl.id}">领用清单 ↗</a>
+              ${cl.state === 'issued' ? `<a class="btn tiny cyan" href="/returns.html?cl=${cl.id}">去归还检测 →</a>` : ''}
+              ${cl.state === 'settled' ? `<a class="btn tiny ghost" href="/returns.html?cl=${cl.id}">查看清点</a>` : ''}` : ''}
+    </div>`;
+  div.querySelector('[data-act="create"]')?.addEventListener('click', async (e) => {
+    await api('/api/checklists', { method: 'POST', body: { show_id: s.id } });
+    toast('领用单已创建（草稿）', 'ok');
+    location.reload();
+  });
+  div.querySelector('[data-act="lock"]')?.addEventListener('click', async () => {
+    try { await api(`/api/checklists/${cl.id}/lock`, { method: 'POST' }); toast('套装已锁定，设备被占用', 'ok'); location.reload(); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  div.querySelector('[data-act="issue"]')?.addEventListener('click', async () => {
+    await api(`/api/checklists/${cl.id}/issue`, { method: 'POST' });
+    toast('套装已发出，演出进行中', 'ok'); location.reload();
+  });
+
+  if (!cl) {
+    div.insertAdjacentHTML('beforeend', '<div class="empty-hint">尚未创建领用清单，点击右上角创建后按角色绑定设备</div>');
+    applyPermissions(div);
+    return div;
+  }
+
+  if (cl.state === 'draft') {
+    div.appendChild(bindForm(cl));
+  }
+  const list = document.createElement('div');
+  list.style.marginTop = '12px';
+  if (!cl.items.length) {
+    list.innerHTML = '<div class="empty-hint">套装为空，请添加角色行并选择设备</div>';
+  } else {
+    list.innerHTML = `<table>
+      <thead><tr><th>角色</th><th>领用人</th><th>麦克风</th><th>腰包</th><th>备用电池</th>${cl.state !== 'draft' ? '<th>状态</th>' : '<th></th>'}</tr></thead>
+      <tbody>${cl.items.map((it) => `
+        <tr>
+          <td><strong>${esc(it.role_name)}</strong></td>
+          <td>${esc(it.assignee_name || '—')}</td>
+          <td>${it.mic_code ? `${esc(it.mic_code)}<br><span class="muted-text">${esc(it.mic_model)} · ${esc(it.mic_band)} · <span class="mono">${it.mic_freq}MHz</span></span>` : '<span class="muted-text">—</span>'}</td>
+          <td>${it.bp_code ? `${esc(it.bp_code)}<br><span class="muted-text">${esc(it.bp_model)}</span>` : '<span class="muted-text">—</span>'}</td>
+          <td>${it.bat_code ? `${esc(it.bat_code)} <span class="pill-kind">${esc(it.bat_model)}</span><br>${pctBar(it.charge_pct)} <span class="muted-text">循环 ${it.cycles ?? '?'}</span>` : '<span class="muted-text">—</span>'}</td>
+          <td>${cl.state === 'draft'
+              ? `<button class="ghost tiny" data-perm="checklist:write" data-del="${it.id}">移除</button>`
+              : retBadges(it)}</td>
+        </tr>`).join('')}</tbody></table>`;
+    list.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => {
+      await api(`/api/items/${b.dataset.del}`, { method: 'DELETE' });
+      toast('已移除', 'ok'); location.reload();
+    });
+  }
+  div.appendChild(list);
+  applyPermissions(div);
+  return div;
+}
+
+function retBadges(it) {
+  const t = (ok, label) => ok
+    ? `<span class="badge ok">${label}已还</span>`
+    : `<span class="badge danger">${label}缺件</span>`;
+  return `<span style="display:inline-flex;gap:4px;flex-wrap:wrap">
+    ${it.microphone_id ? t(it.returned_mic, '麦') : ''}
+    ${it.beltpack_id ? t(it.returned_bp, '腰包') : ''}
+    ${it.spare_battery_id ? t(it.returned_battery, '电池') : ''}
+  </span>`;
+}
+
+function bindForm(cl) {
+  const form = document.createElement('div');
+  form.className = 'card';
+  form.style.background = '#f3efe3';
+  form.style.marginTop = '12px';
+  Promise.all([api('/api/microphones'), api('/api/beltpacks'), api('/api/batteries')]).then(([mics, bps, bats]) => {
+    const busy = new Set();
+    cl.items.forEach((it) => { busy.add(`m${it.microphone_id}`); busy.add(`p${it.beltpack_id}`); busy.add(`b${it.spare_battery_id}`); });
+    form.innerHTML = `
+      <h3>添加角色行（草稿可编辑）</h3>
+      <div class="role-line">
+        <label class="field">角色 / 岗位
+          <input id="rName" placeholder="例：主持B / 吉他手"></label>
+        <label class="field">领用人（可空）<input id="rAssignee"></label>
+        <label class="field">麦克风
+          <select id="rMic"><option value="">—</option>
+            ${mics.filter((m) => m.state === 'in_stock').map((m) => `<option value="${m.id}">${m.code} · ${m.model}</option>`).join('')}
+          </select></label>
+        <label class="field">腰包
+          <select id="rBp"><option value="">—</option>
+            ${bps.filter((p) => p.state === 'in_stock').map((p) => `<option value="${p.id}">${p.code} · ${p.model}</option>`).join('')}
+          </select></label>
+      </div>
+      <div class="role-line" style="margin-top:8px">
+        <label class="field">备用电池（仅显示在库/可充好的）
+          <select id="rBat"><option value="">—</option>
+            ${bats.filter((b) => b.state === 'available').map((b) =>
+              `<option value="${b.id}">${b.code} · ${b.model} · ${b.charge_pct}% · SOH ${b.health_pct}%</option>`).join('')}
+          </select></label>
+        <span></span><span></span><span></span>
+        <button class="cyan" id="addLine" data-perm="checklist:write">＋ 加入套装</button>
+      </div>
+      <div class="muted-text" style="margin-top:6px;font-size:12px">
+        下拉只显示当前在库设备；已被其他演出套装占用或隔离/充电中的设备不可选（服务端 equipment_locks 为最终约束）。
+      </div>`;
+    form.querySelector('#addLine').onclick = async () => {
+      try {
+        await api(`/api/checklists/${cl.id}/items`, {
+          method: 'POST',
+          body: {
+            role_name: form.querySelector('#rName').value.trim(),
+            assignee_name: form.querySelector('#rAssignee').value.trim(),
+            microphone_id: optNum(form.querySelector('#rMic')),
+            beltpack_id: optNum(form.querySelector('#rBp')),
+            spare_battery_id: optNum(form.querySelector('#rBat')),
+          },
+        });
+        toast('已加入套装', 'ok');
+        location.reload();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    applyPermissions(form);
+  });
+  return form;
+}
+function optNum(sel) { const v = sel.value; return v === '' ? null : Number(v); }
+</script>
+</body>
+</html>

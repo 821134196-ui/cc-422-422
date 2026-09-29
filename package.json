@@ -1,0 +1,16 @@
+{
+  "name": "mic-battery-turnover",
+  "version": "1.0.0",
+  "description": "演艺场馆无线麦克风电池周转与充电系统",
+  "type": "commonjs",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node --no-warnings src/server.js",
+    "demo": "node --no-warnings src/seed.js",
+    "test": "node --no-warnings --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "license": "MIT"
+}

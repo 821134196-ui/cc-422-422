@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>领用清单 · 麦克风电池周转</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="dot"></span>演艺场馆 · 麦克风电池周转</div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="authbox"><span id="roleBadge" class="role-badge none"></span><select id="staffSelect"></select></div>
+</header>
+<main>
+  <div class="page-head">
+    <div>
+      <h1>领用清单</h1>
+      <div class="sub">草稿 → 锁定（套装占用）→ 发出（演出中）→ 清点完成；锁定后不可改套装</div>
+    </div>
+  </div>
+
+  <div class="grid" id="list" style="gap:14px"></div>
+
+  <h2 style="margin:28px 0 10px;font-size:16px">电池健康与隔离复核</h2>
+  <div class="card">
+    <table id="batTable">
+      <thead><tr><th>电池</th><th>型号</th><th>循环</th><th>电量</th><th>健康度</th><th>状态</th><th>复核</th><th>操作</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="muted-text" style="font-size:12px;margin-top:8px">
+      健康度 &lt; 80% 自动隔离；解除需库房管理员发起、<strong>另一位</strong>库房管理员复核；健康度仍不达标时复核备注须含“降级使用”。
+    </div>
+  </div>
+</main>
+<script src="/app.js"></script>
+<script>
+async function pageInit() { await load(); }
+
+async function load() {
+  const [cls, bats] = await Promise.all([api('/api/checklists'), api('/api/batteries')]);
+  const detailed = await Promise.all(cls.map((c) => api(`/api/checklists/${c.id}`)));
+  const box = document.getElementById('list');
+  box.innerHTML = detailed.length ? '' : '<div class="card empty-hint">暂无领用清单，去「设备套装」为演出创建</div>';
+  detailed.forEach((cl) => box.appendChild(renderCl(cl)));
+  renderBats(bats);
+  applyPermissions();
+}
+
+function renderCl(cl) {
+  const div = document.createElement('div');
+  div.className = 'card';
+  const returned = cl.items.reduce((a, it) => a + (it.returned_mic ? 1 : 0) + (it.returned_bp ? 1 : 0) + (it.returned_battery ? 1 : 0), 0);
+  const total = cl.items.reduce((a, it) => a + (it.microphone_id ? 1 : 0) + (it.beltpack_id ? 1 : 0) + (it.spare_battery_id ? 1 : 0), 0);
+  div.innerHTML = `
+    <div class="sg-head" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <h2 style="margin:0">#${cl.id} · ${esc(cl.show.name)}</h2>
+      ${badge(cl.state)}
+      <span class="muted-text">${esc(cl.show.venue)} · ${fmt(cl.show.start_at)}</span>
+      <span style="flex:1"></span>
+      <span class="muted-text">${cl.items.length} 个角色 · 归还 ${returned}/${total} 件</span>
+      ${cl.state === 'issued' ? `<a class="btn tiny cyan" href="/returns.html?cl=${cl.id}">归还检测 →</a>` : ''}
+      ${cl.state === 'draft' ? `<a class="btn tiny ghost" href="/kits.html?show=${cl.show_id}">去套装编辑</a>` : ''}
+    </div>
+    <table style="margin-top:10px">
+      <thead><tr><th>角色</th><th>麦克风</th><th>腰包</th><th>备用电池</th><th>时间线</th></tr></thead>
+      <tbody>${cl.items.map((it) => `<tr>
+        <td><strong>${esc(it.role_name)}</strong><br><span class="who muted-text">${esc(it.assignee_name || '')}</span></td>
+        <td>${it.mic_code ? esc(it.mic_code) : '—'}</td>
+        <td>${it.bp_code ? esc(it.bp_code) : '—'}</td>
+        <td>${it.bat_code ? `${esc(it.bat_code)} · ${pctBar(it.charge_pct)}` : '—'}</td>
+        <td class="muted-text" style="font-size:12px">
+          锁定 ${fmt(cl.locked_at)}<br>发出 ${fmt(cl.issued_at)}<br>清点 ${fmt(cl.settled_at)}
+        </td></tr>`).join('')}</tbody>
+    </table>
+    ${cl.settle_note ? `<div class="muted-text" style="margin-top:8px;font-size:12.5px">清点备注：${esc(cl.settle_note)}</div>` : ''}`;
+  return div;
+}
+
+function renderBats(bats) {
+  const tb = document.querySelector('#batTable tbody');
+  tb.innerHTML = bats.map((b) => {
+    const healthCls = b.health_pct < 80 ? 'low' : b.health_pct < 90 ? 'mid' : '';
+    let act = '';
+    if (b.state === 'quarantined' && b.review_status === 'auto') {
+      act = `<button class="ghost tiny" data-perm="quarantine:request" data-req="${b.id}">申请解除</button>`;
+    } else if (b.review_status === 'pending_release') {
+      act = `<button class="cyan tiny" data-perm="quarantine:review" data-approve="${b.id}">复核通过</button>
+             <button class="danger tiny" data-perm="quarantine:review" data-reject="${b.id}">驳回</button>`;
+    }
+    return `<tr>
+      <td class="mono"><strong>${b.code}</strong></td>
+      <td>${esc(b.model)}</td>
+      <td>${b.cycles}</td>
+      <td>${pctBar(b.charge_pct)}</td>
+      <td><span class="bar ${healthCls}" style="display:inline-block"><i style="width:${b.health_pct}%"></i></span> <span class="mono">${b.health_pct}%</span></td>
+      <td>${badge(b.state)}</td>
+      <td>${b.review_status !== 'none' ? badge(b.review_status, b.review_status === 'rejected' || b.review_status === 'auto' ? 'danger' : 'warn') : '<span class="muted-text">—</span>'}
+          ${b.review_note ? `<div class="muted-text" style="font-size:11px">${esc(b.review_note)}</div>` : ''}</td>
+      <td style="white-space:nowrap">${act}</td>
+    </tr>`;
+  }).join('');
+
+  tb.querySelectorAll('[data-req]').forEach((btn) => btn.onclick = async () => {
+    const note = prompt('解除隔离申请说明（将由另一位库房管理员复核）：', '已复测，申请解除');
+    if (note === null) return;
+    try { await api(`/api/batteries/${btn.dataset.req}/release-request`, { method: 'POST', body: { note } }); toast('已提交，等待复核', 'ok'); load(); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  const review = async (id, decision) => {
+    const def = decision === 'approve' ? '复核通过' : '复核驳回';
+    const note = prompt(`${def}备注${decision === 'approve' ? '（健康度仍低于 80% 时须填写“降级使用”）' : ''}：`, decision === 'approve' ? '降级使用，限定非主角岗位' : '');
+    if (note === null) return;
+    try { await api(`/api/batteries/${id}/review`, { method: 'POST', body: { decision, note } }); toast('复核完成', 'ok'); load(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  tb.querySelectorAll('[data-approve]').forEach((b) => b.onclick = () => review(b.dataset.approve, 'approve'));
+  tb.querySelectorAll('[data-reject]').forEach((b) => b.onclick = () => review(b.dataset.reject, 'reject'));
+}
+</script>
+</body>
+</html>
