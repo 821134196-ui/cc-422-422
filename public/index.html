@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>演艺场馆麦克风电池周转系统</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="dot"></span>声场周转台<small>无线麦克风 · 电池 · 充电柜</small></div>
+  <nav class="tabs" id="tabs">
+    <button data-view="calendar" class="active">场次日历</button>
+    <button data-view="kits">设备套装</button>
+    <button data-view="cabinet">充电柜</button>
+    <button data-view="checklists">领用清单</button>
+    <button data-view="returns">归还检测</button>
+    <button data-view="faults">故障队列 <span id="faultPill" class="badge red" style="display:none"></span></button>
+  </nav>
+  <div class="role-box">
+    <span>当前岗位</span>
+    <select id="roleSelect"></select>
+    <span class="role-tag" id="roleTag"></span>
+  </div>
+</header>
+
+<main>
+  <!-- 场次日历 -->
+  <section class="view active" id="view-calendar">
+    <h2 class="page-title">场次日历</h2>
+    <p class="page-sub">按日期查看排练与正式演出；正在演出、已结清场次以不同颜色区分。</p>
+    <div class="card">
+      <div class="row" style="margin-bottom:10px">
+        <button class="btn ghost sm" id="calPrev">‹ 上月</button>
+        <strong id="calTitle" style="min-width:130px;text-align:center"></strong>
+        <button class="btn ghost sm" id="calNext">下月 ›</button>
+        <span class="spacer"></span>
+        <span class="muted">今天：<span id="todayLabel"></span></span>
+      </div>
+      <div class="cal-wrap" id="calGrid"></div>
+    </div>
+    <div class="card">
+      <h3>场次一览</h3>
+      <div id="showList"></div>
+    </div>
+  </section>
+
+  <!-- 设备套装 -->
+  <section class="view" id="view-kits">
+    <h2 class="page-title">设备套装</h2>
+    <p class="page-sub">套装按演出分组；草稿可编辑，锁定后设备即被占用，不能进入其他套装。</p>
+    <div id="kitsByShow"></div>
+    <div class="card">
+      <h3>麦克风频率台账 <span class="meta">撞频设备自动标记故障，仅调音师可改频</span></h3>
+      <div id="micTable"></div>
+    </div>
+    <div class="card">
+      <h3>腰包台账</h3>
+      <div id="packTable"></div>
+    </div>
+  </section>
+
+  <!-- 充电柜 -->
+  <section class="view" id="view-cabinet">
+    <h2 class="page-title">充电柜</h2>
+    <p class="page-sub">槽位网格实时显示电量与设备回执；乱序回执按序号丢弃，健康度低于 80% 自动隔离。</p>
+    <div id="cabinets"></div>
+    <div class="card">
+      <h3>电池台账 <span class="meta">型号 · 循环次数 · 电量 · 健康状态</span></h3>
+      <div id="batteryTable"></div>
+    </div>
+  </section>
+
+  <!-- 领用清单 -->
+  <section class="view" id="view-checklists">
+    <h2 class="page-title">领用清单</h2>
+    <p class="page-sub">舞台主管锁定套装并发料；同一设备不能同时出现在两张生效清单。</p>
+    <div class="stat-row" id="clStats"></div>
+    <div class="card">
+      <h3>新建领用单</h3>
+      <div class="row">
+        <select id="newClShow"></select>
+        <input id="newClRole" placeholder="角色 / 岗位，如：主持人·苏曼" style="min-width:220px">
+        <button class="btn cyan" id="newClBtn">创建草稿</button>
+      </div>
+    </div>
+    <div id="clList"></div>
+  </section>
+
+  <!-- 归还检测 -->
+  <section class="view" id="view-returns">
+    <h2 class="page-title">归还检测</h2>
+    <p class="page-sub">麦克风、电池、腰包分三列检测，缺件红底一眼可见；缺件须由舞台主管登记丢失例后才能完成清点。</p>
+    <div class="card">
+      <div class="row">
+        <strong>选择领用单：</strong>
+        <select id="returnClSelect" style="min-width:340px"></select>
+      </div>
+    </div>
+    <div id="returnDetail"></div>
+    <div class="card" id="lateCard" style="display:none">
+      <h3>迟到回传（挂起，不覆盖已完成清点）</h3>
+      <div id="lateScans"></div>
+    </div>
+  </section>
+
+  <!-- 故障队列 -->
+  <section class="view" id="view-faults">
+    <h2 class="page-title">故障队列</h2>
+    <p class="page-sub">低电量、充电失败、接触不良、丢失、错频、漏件分类处理；隔离解除需设备员发起、经理复核。</p>
+    <div class="stat-row" id="faultStats"></div>
+    <div id="faultList"></div>
+    <div class="card">
+      <h3>最近操作审计</h3>
+      <div id="auditList"></div>
+    </div>
+  </section>
+</main>
+
+<div class="toast-wrap" id="toastWrap"></div>
+<script src="app.js"></script>
+</body>
+</html>

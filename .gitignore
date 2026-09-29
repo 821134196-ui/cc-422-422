@@ -13,3 +13,9 @@ build/
 轨迹/
 录屏/
 视频/
+
+# 本地 SQLite 数据
+/data/
+*.db
+*.db-wal
+*.db-shm
